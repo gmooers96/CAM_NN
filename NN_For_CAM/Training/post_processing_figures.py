@@ -4,6 +4,9 @@ import matplotlib
 import xarray as xr
 import pdb
 from plotting_functions import *
+from sklearn.metrics import r2_score
+from skimage.metrics import structural_similarity as ssim
+from scipy.stats import entropy
 
 fz = 15*1.5
 lw = 4
@@ -27,17 +30,31 @@ def main_plotting(truth,
                  var_names,
                  save_path,
                  nametag,
+                 do_poles,
                  ):
 
     raw_data = xr.open_dataset(raw_data)
+    print("savepath", save_path)
+    print("nametag", nametag)
+    print("var_names", var_names)
+    print('z_dim', z_dim)
+    np.save('dummy_data/truths.npy', truth)
+    np.save('dummy_data/preds.npy', pred)
     
     lon = raw_data.lon.values
     lat = raw_data.lat.values
+    if do_poles == False:
+        north_lat_idx = np.abs(lat - 80.0).argmin()
+        south_lat_idx = np.abs(lat - (-1.0*80.0)).argmin()
+        lat = lat[south_lat_idx:north_lat_idx+1] 
+        
     z = raw_data.z.values[:z_dim]
     p = raw_data.p.values
     TERRA = raw_data.TERRA.values.squeeze()
     sigma = p / p[0]
     land_mask = TERRA[0]
+
+    srf_height = np.load("/ocean/projects/ees240018p/gmooers/Githubs/Neural_nework_parameterization/NN_training/src/CAM_HPO/Testing_log/temp_data/high_res_z_height_of_terrain.npy")
 
     sigma_plot, lat_plot = np.meshgrid(sigma, lat)
     lat_mesh, lon_mesh = np.meshgrid(lat, lon)
@@ -64,6 +81,302 @@ def main_plotting(truth,
     lat_axis = 1
     time_axis=2
     z_axis=0
+
+    #### beggining of precip figures
+
+    truth_precip = p[0]*np.sum(t_q_auto_out, axis=0)
+    predicted_precip = p[0]*np.sum(p_q_auto_out, axis=0)
+
+    land_mask_bool = land_mask > 0.5
+    ocean_mask_bool = ~land_mask_bool
+    
+    land_mask_3d = land_mask_bool[:, np.newaxis, :]  # shape (lat, 1, lon)
+    ocean_mask_3d = ocean_mask_bool[:, np.newaxis, :]
+
+    truth_land_precip = np.where(land_mask_3d, truth_precip, np.nan)
+    pred_land_precip = np.where(land_mask_3d, predicted_precip, np.nan)
+    
+    truth_ocean_precip = np.where(ocean_mask_3d, truth_precip, np.nan)
+    pred_ocean_precip = np.where(ocean_mask_3d, predicted_precip, np.nan)
+
+    time_axis_precip = 1
+
+    sse_precip = ((truth_precip - predicted_precip)**2).sum(axis=time_axis_precip)
+    svar_precip = np.sum((truth_precip - truth_precip.mean(axis=time_axis_precip)[:,None,:])**2, axis=time_axis_precip)
+    R2_Precip = 1- (sse_precip/svar_precip)
+    
+    sse_land_precip = np.nansum((truth_land_precip - pred_land_precip)**2, axis=time_axis_precip)
+    svar_land_precip = np.nansum((truth_land_precip - np.nanmean(truth_land_precip, axis=time_axis_precip)[:,None,:])**2, axis=time_axis_precip)
+    R2_land_Precip = 1- (sse_land_precip/svar_land_precip)
+    
+    sse_ocean_precip = np.nansum((truth_ocean_precip - pred_ocean_precip)**2, axis=time_axis_precip)
+    svar_ocean_precip = np.nansum((truth_ocean_precip - np.nanmean(truth_ocean_precip, axis=time_axis_precip)[:,None,:])**2, axis=time_axis_precip)
+    R2_ocean_Precip = 1- (sse_ocean_precip/svar_ocean_precip)
+
+    print("Global R2 is", R2_Precip.mean())
+    print("Land R2 is", np.nanmean(R2_land_Precip))
+    print("Ocean R2 is", np.nanmean(R2_ocean_Precip))
+
+    single_geo_plotter(lats=lat_mesh, 
+                   lons=lon_mesh, 
+                   field_data=R2_Precip.T, 
+                   title=r'Global Precipitation $R^2$', 
+                   units="Skill Score", 
+                   cmap = "Blues", 
+                   logcbar=False, 
+                   save=False, 
+                   vmin = 0, 
+                   vmax = 1.0, 
+                   base_dir=save_path+nametag,
+                   save_dir="/Precip_Figures",
+                  )
+
+    my_scatter_plot(
+        truth_array=truth_precip, 
+        pred_array=predicted_precip, 
+        y_label='NN Predictions', 
+        x_label='gSAM Targets', 
+        title='Global Precipitation Truth vs. NN Predictions', 
+        save=True, 
+        base_dir=save_path+nametag,
+        save_dir="/Precip_Figures",
+    )
+
+    my_scatter_plot(
+        truth_array=truth_land_precip, 
+        pred_array=pred_land_precip, 
+        y_label='NN Predictions', 
+        x_label='gSAM Targets', 
+        title='Land Precipitation Truth vs. NN Predictions', 
+        save=True, 
+        base_dir=save_path+nametag,
+        save_dir="/Precip_Figures",
+    )
+
+    my_scatter_plot(
+        truth_array=truth_ocean_precip, 
+        pred_array=pred_ocean_precip, 
+        y_label='NN Predictions', 
+        x_label='gSAM Targets', 
+        title='Ocean Precipitation Truth vs. NN Predictions', 
+        save=True, 
+        base_dir=save_path+nametag,
+        save_dir="/Precip_Figures",
+    )
+
+    truth_precip_1d = truth_precip.ravel()
+    predicted_precip_1d = predicted_precip.ravel()
+    
+    truth_land_precip_1d = truth_land_precip.ravel()
+    pred_land_precip_1d = pred_land_precip.ravel()
+    
+    truth_ocean_precip_1d = truth_ocean_precip.ravel()
+    pred_ocean_precip_1d = pred_ocean_precip.ravel()
+
+    num_bins = 100
+    bins = np.logspace(np.log10(0.02), np.log10(np.nanmax(truth_precip_1d)), num_bins)
+
+    precip_distribution_plot(
+        global_truth=truth_precip_1d, 
+        global_nn=predicted_precip_1d, 
+        land_truth=truth_land_precip_1d, 
+        land_nn=pred_land_precip_1d,
+        ocean_truth=truth_ocean_precip_1d, 
+        ocean_nn=pred_ocean_precip_1d, 
+        title_all='Global', 
+        title_land='Land Only', 
+        title_ocean='Ocean Only', 
+        label_truth='gSAM Targets', 
+        label_nn='NN Predictions',
+        suptitle='Precipitation PDFs', 
+        x_label='Frequency', 
+        y_label=r"$mm \ day^{-1}$",
+        save=True, 
+        base_dir=save_path+nametag,
+        save_dir="/Precip_Figures",
+        savename='Precip_Dist',
+        color_true='blue', 
+        color_nn='green', 
+        bins=bins, 
+        x_log = False, 
+        y_log = False, 
+        x_limits=None,
+    )
+
+    truth_precip_lat = np.mean(truth_precip, axis=(1,2))
+    predicted_precip_lat = np.mean(predicted_precip, axis=(1,2))
+    
+    truth_land_precip_lat = np.nanmean(truth_land_precip, axis=(1,2))
+    pred_land_precip_lat = np.nanmean(pred_land_precip, axis=(1,2))
+    
+    truth_ocean_precip_lat = np.nanmean(truth_ocean_precip, axis=(1,2))
+    pred_ocean_precip_lat = np.nanmean(pred_ocean_precip, axis=(1,2))
+
+    precip_with_latitude(
+        precip_truth=truth_precip_lat, 
+        precip_nn=predicted_precip_lat, 
+        truth_label='gSAM Target Data', 
+        nn_label='NN Predictions', 
+        title='Precipitation with latitude', 
+        lats=lat, 
+        color_truth='Blue', 
+        color_nn='Green', 
+        y_label='Precipitation', 
+        x_label='Latitude',
+        vmin=None, 
+        vmax=None, 
+        save=True, 
+        base_dir=save_path+nametag,
+        save_dir="/Precip_Figures",
+        savename='Precip_vs_Lat',
+    )
+
+    precip_with_latitude(
+        precip_truth=truth_land_precip_lat, 
+        precip_nn=pred_land_precip_lat, 
+        truth_label='gSAM Target Data', 
+        nn_label='NN Predictions', 
+        title='Precipitation with latitude (Land)', 
+        lats=lat, 
+        color_truth='Blue', 
+        color_nn='Green', 
+        y_label='Precipitation', 
+        x_label='Latitude',
+        vmin=None, 
+        vmax=None, 
+        save=True, 
+        base_dir=save_path+nametag,
+        save_dir="/Precip_Figures",
+        savename='Precip_vs_Lat_land',
+    )
+
+    precip_with_latitude(
+        precip_truth=truth_ocean_precip_lat, 
+        precip_nn=pred_ocean_precip_lat, 
+        truth_label='gSAM Target Data', 
+        nn_label='NN Predictions', 
+        title='Precipitation with latitude (Ocean)', 
+        lats=lat, 
+        color_truth='Blue', 
+        color_nn='Green', 
+        y_label='Precipitation', 
+        x_label='Latitude',
+        vmin=None, 
+        vmax=None, 
+        save=True, 
+        base_dir=save_path+nametag,
+        save_dir="/Precip_Figures",
+        savename='Precip_vs_Lat_ocean',
+    )
+
+    truth_precip_lat_lon = np.mean(truth_precip, axis=(1))
+    predicted_precip_lat_lon = np.mean(predicted_precip, axis=(1))
+
+    ssim_map = ssim(truth_precip_lat_lon, predicted_precip_lat_lon, data_range=truth_precip_lat_lon.max() - truth_precip_lat_lon.min())
+    print('SSIM:', ssim_map)
+
+    plot_side_by_side_with_diff(
+        A=truth_precip_lat_lon.T, 
+        B=predicted_precip_lat_lon.T, 
+        lons=lon_mesh, 
+        lats=lat_mesh, 
+        units=r"$mm \ day^{-1}$",
+        cmap="Greens",
+        diff_cmap="seismic",
+        title_A="gSAM Targets",
+        title_B="NN Predictions",
+        title_diff="Difference",
+        suptitle='Gridcell Precipitation Means',
+        projection=ccrs.Robinson(central_longitude=180),
+        linthresh=None,
+        norm=False,
+        save=True, 
+        base_dir=save_path+nametag,
+        save_dir="/Precip_Figures",
+        savename='Precip_mean_lat_lat',
+        vmin=None,
+        vmax=None,
+        vmax_clip=None,
+        vmin_clip=None,
+        diff_mode="raw", # 'raw' or 'relative'
+    )
+
+    rmse_map = np.sqrt(np.nanmean((predicted_precip - truth_precip)**2, axis=1))
+
+    global_rmse = compute_rmse(truth_precip, predicted_precip)
+    global_rmse_land = compute_rmse(truth_land_precip, pred_land_precip)
+    global_rmse_ocean = compute_rmse(truth_ocean_precip, pred_ocean_precip)
+
+    
+    global_mae = compute_mae(truth_precip, predicted_precip)
+    global_mae_land = compute_mae(truth_land_precip, pred_land_precip)
+    global_mae_ocean = compute_mae(truth_ocean_precip, pred_ocean_precip)
+
+    print("Global RMSE is:", global_rmse)
+    print("Land RMSE is:", global_rmse_land)
+    print("Ocean RMSE is:", global_rmse_ocean)
+    
+    print("Global MAE is:", global_mae)
+    print("Land MAE is:", global_mae_land)
+    print("Ocean MAE is:", global_mae_ocean)
+
+    single_geo_plotter(
+        lats=lat_mesh, 
+        lons=lon_mesh, 
+        field_data=rmse_map.T, 
+        title='RMSE of Precip', 
+        units=r"$mm \ day^{-1}$", 
+        cmap = "Reds", 
+        logcbar=False, 
+        save=True, 
+        vmin = None, 
+        vmax=None, 
+        base_dir=save_path+nametag,
+        save_dir="/Precip_Figures",
+        savename='Precip_RMSE'
+    )
+
+    truth_precip_time = np.mean(truth_precip, axis=(0,2))
+    predicted_precip_time = np.mean(predicted_precip, axis=(0,2))
+    
+    truth_land_precip_time = np.nanmean(truth_land_precip, axis=(0,2))
+    pred_land_precip_time = np.nanmean(pred_land_precip, axis=(0,2))
+    
+    truth_ocean_precip_time = np.nanmean(truth_ocean_precip, axis=(0,2))
+    pred_ocean_precip_time = np.nanmean(pred_ocean_precip, axis=(0,2))
+
+    time_array = np.arange(truth_precip_time.size)
+
+    precip_with_time(
+        truth_all=truth_precip_time, 
+        nn_all=predicted_precip_time, 
+        truth_land=truth_land_precip_time, 
+        nn_land=pred_land_precip_time,
+        truth_ocean=truth_ocean_precip_time, 
+        nn_ocean=pred_ocean_precip_time, 
+        times=time_array,       
+        truth_all_label='All gSAM Targets', 
+        nn_all_label='All NN Predictions', 
+        truth_land_label='Land gSAM Targets', 
+        nn_land_label='Land NN Predcitions', 
+        truth_ocean_label='Ocean gSAM Targets', 
+        nn_ocean_label='Ocean NN Predictions', 
+        all_color='purple', 
+        land_color='green', 
+        ocean_color='blue',
+        y_label=r"$mm \ day^{-1}$",  
+        x_label='Time in Hours', 
+        global_title='Precipitation Though Time',
+        vmin=None, 
+        vmax=None, 
+        save=True, 
+        base_dir=save_path+nametag,
+        save_dir="/Precip_Figures",
+        savename='Precip_Time',
+    )
+
+    #### end of precip figures
+    
     t_Tout_lon_mean = np.mean(t_Tout, axis=lon_axis)
     t_T_adv_out_lon_mean = np.mean(t_T_adv_out, axis=lon_axis)
     t_q_adv_out_lon_mean = np.mean(t_q_adv_out, axis=lon_axis)
@@ -75,6 +388,20 @@ def main_plotting(truth,
     p_q_adv_out_lon_mean = np.mean(p_q_adv_out, axis=lon_axis)
     p_q_auto_out_lon_mean = np.mean(p_q_auto_out, axis=lon_axis)
     p_q_sed_flux_tot_lon_mean = np.mean(p_q_sed_flux_tot, axis=lon_axis)
+
+    #avewrage out Z for lat/lon maps
+
+    t_Tout_z_mean = np.mean(t_Tout, axis=z_axis)
+    t_T_adv_out_z_mean = np.mean(t_T_adv_out, axis=z_axis)
+    t_q_adv_out_z_mean = np.mean(t_q_adv_out, axis=z_axis)
+    t_q_auto_out_z_mean = np.mean(t_q_auto_out, axis=z_axis)
+    t_q_sed_flux_tot_z_mean = np.mean(t_q_sed_flux_tot, axis=z_axis)
+
+    p_Tout_z_mean = np.mean(p_Tout, axis=z_axis)
+    p_T_adv_out_z_mean = np.mean(p_T_adv_out, axis=z_axis)
+    p_q_adv_out_z_mean = np.mean(p_q_adv_out, axis=z_axis)
+    p_q_auto_out_z_mean = np.mean(p_q_auto_out, axis=z_axis)
+    p_q_sed_flux_tot_z_mean = np.mean(p_q_sed_flux_tot, axis=z_axis)
 
     #apply land and sea masks to data
     # origiunal code was [:,None,:,None]
@@ -100,29 +427,32 @@ def main_plotting(truth,
     p_q_sed_flux_tot_ocean = np.where(land_mask[None,:,None,:] == 1.0, p_q_sed_flux_tot, np.nan)
     p_q_sed_flux_tot_land = np.where(land_mask[None,:,None,:] == 0.0, p_q_sed_flux_tot, np.nan)
 
+    #get ocean and land lon means for R2 figures -- longitude
 
-    #calculate vertical means and standard deviations
-    t_Tout_ocean = np.where(land_mask[None,:,None,:] == 1.0, t_Tout, np.nan)
-    t_Tout_land = np.where(land_mask[None,:,None,:] == 0.0, t_Tout, np.nan)
-    t_T_adv_out_ocean = np.where(land_mask[None,:,None,:] == 1.0, t_T_adv_out, np.nan)
-    t_T_adv_out_land = np.where(land_mask[None,:,None,:] == 0.0, t_T_adv_out, np.nan)
-    t_q_adv_out_ocean = np.where(land_mask[None,:,None,:] == 1.0, t_q_adv_out, np.nan)
-    t_q_adv_out_land = np.where(land_mask[None,:,None,:] == 0.0, t_q_adv_out, np.nan)
-    t_q_auto_out_ocean = np.where(land_mask[None,:,None,:] == 1.0, t_q_auto_out, np.nan)
-    t_q_auto_out_land = np.where(land_mask[None,:,None,:] == 0.0, t_q_auto_out, np.nan)
-    t_q_sed_flux_tot_ocean = np.where(land_mask[None,:,None,:] == 1.0, t_q_sed_flux_tot, np.nan)
-    t_q_sed_flux_tot_land = np.where(land_mask[None,:,None,:] == 0.0, t_q_sed_flux_tot, np.nan)
+    t_Tout_lon_mean_ocean = np.nanmean(t_Tout_ocean, axis=lon_axis)
+    t_T_adv_out_lon_mean_ocean = np.nanmean(t_T_adv_out_ocean, axis=lon_axis)
+    t_q_adv_out_lon_mean_ocean = np.nanmean(t_q_adv_out_ocean, axis=lon_axis)
+    t_q_auto_out_lon_mean_ocean = np.nanmean(t_q_auto_out_ocean, axis=lon_axis)
+    t_q_sed_flux_tot_lon_mean_ocean = np.nanmean(t_q_sed_flux_tot_ocean, axis=lon_axis)
 
-    p_Tout_ocean = np.where(land_mask[None,:,None,:] == 1.0, p_Tout, np.nan)
-    p_Tout_land = np.where(land_mask[None,:,None,:] == 0.0, p_Tout, np.nan)
-    p_T_adv_out_ocean = np.where(land_mask[None,:,None,:] == 1.0, p_T_adv_out, np.nan)
-    p_T_adv_out_land = np.where(land_mask[None,:,None,:] == 0.0, p_T_adv_out, np.nan)
-    p_q_adv_out_ocean = np.where(land_mask[None,:,None,:] == 1.0, p_q_adv_out, np.nan)
-    p_q_adv_out_land = np.where(land_mask[None,:,None,:] == 0.0, p_q_adv_out, np.nan)
-    p_q_auto_out_ocean = np.where(land_mask[None,:,None,:] == 1.0, p_q_auto_out, np.nan)
-    p_q_auto_out_land = np.where(land_mask[None,:,None,:] == 0.0, p_q_auto_out, np.nan)
-    p_q_sed_flux_tot_ocean = np.where(land_mask[None,:,None,:] == 1.0, p_q_sed_flux_tot, np.nan)
-    p_q_sed_flux_tot_land = np.where(land_mask[None,:,None,:] == 0.0, p_q_sed_flux_tot, np.nan)
+    p_Tout_lon_mean_ocean = np.nanmean(p_Tout_ocean, axis=lon_axis)
+    p_T_adv_out_lon_mean_ocean = np.nanmean(p_T_adv_out_ocean, axis=lon_axis)
+    p_q_adv_out_lon_mean_ocean = np.nanmean(p_q_adv_out_ocean, axis=lon_axis)
+    p_q_auto_out_lon_mean_ocean = np.nanmean(p_q_auto_out_ocean, axis=lon_axis)
+    p_q_sed_flux_tot_lon_mean_ocean = np.nanmean(p_q_sed_flux_tot_ocean, axis=lon_axis)
+
+    t_Tout_lon_mean_land = np.nanmean(t_Tout_land, axis=lon_axis)
+    t_T_adv_out_lon_mean_land = np.nanmean(t_T_adv_out_land, axis=lon_axis)
+    t_q_adv_out_lon_mean_land = np.nanmean(t_q_adv_out_land, axis=lon_axis)
+    t_q_auto_out_lon_mean_land = np.nanmean(t_q_auto_out_land, axis=lon_axis)
+    t_q_sed_flux_tot_lon_mean_land = np.nanmean(t_q_sed_flux_tot_land, axis=lon_axis)
+
+    p_Tout_lon_mean_land = np.nanmean(p_Tout_land, axis=lon_axis)
+    p_T_adv_out_lon_mean_land = np.nanmean(p_T_adv_out_land, axis=lon_axis)
+    p_q_adv_out_lon_mean_land = np.nanmean(p_q_adv_out_land, axis=lon_axis)
+    p_q_auto_out_lon_mean_land = np.nanmean(p_q_auto_out_land, axis=lon_axis)
+    p_q_sed_flux_tot_lon_mean_land = np.nanmean(p_q_sed_flux_tot_land, axis=lon_axis)
+
 
     #all 
     t_Tout_vertical_mean = np.mean(t_Tout, axis=(lon_axis,lat_axis,time_axis))
@@ -264,12 +594,37 @@ def main_plotting(truth,
     sse_q_auto_out_lon_mean = ((t_q_auto_out_lon_mean - p_q_auto_out_lon_mean)**2).sum(axis=time_axis)
     sse_q_sed_flux_tot_lon_mean = ((t_q_sed_flux_tot_lon_mean - p_q_sed_flux_tot_lon_mean)**2).sum(axis=time_axis)
 
+    sse_Tout_lon_mean_ocean = np.nansum(((t_Tout_lon_mean_ocean - p_Tout_lon_mean_ocean)**2), axis=time_axis)
+    sse_T_adv_out_lon_mean_ocean = np.nansum(((t_T_adv_out_lon_mean_ocean - p_T_adv_out_lon_mean_ocean)**2), axis=time_axis)
+    sse_q_adv_out_lon_mean_ocean = np.nansum(((t_q_adv_out_lon_mean_ocean - p_q_adv_out_lon_mean_ocean)**2), axis=time_axis)
+    sse_q_auto_out_lon_mean_ocean = np.nansum(((t_q_auto_out_lon_mean_ocean - p_q_auto_out_lon_mean_ocean)**2), axis=time_axis)
+    sse_q_sed_flux_tot_lon_mean_ocean = np.nansum(((t_q_sed_flux_tot_lon_mean_ocean - p_q_sed_flux_tot_lon_mean_ocean)**2), axis=time_axis)
+
+    sse_Tout_lon_mean_land = np.nansum(((t_Tout_lon_mean_land - p_Tout_lon_mean_land)**2), axis=time_axis)
+    sse_T_adv_out_lon_mean_land = np.nansum(((t_T_adv_out_lon_mean_land - p_T_adv_out_lon_mean_land)**2), axis=time_axis)
+    sse_q_adv_out_lon_mean_land = np.nansum(((t_q_adv_out_lon_mean_land - p_q_adv_out_lon_mean_land)**2), axis=time_axis)
+    sse_q_auto_out_lon_mean_land = np.nansum(((t_q_auto_out_lon_mean_land - p_q_auto_out_lon_mean_land)**2), axis=time_axis)
+    sse_q_sed_flux_tot_lon_mean_land = np.nansum(((t_q_sed_flux_tot_lon_mean_land - p_q_sed_flux_tot_lon_mean_land)**2), axis=time_axis)
+
     #was [:,None]
     svar_Tout_lon_mean = np.sum((t_Tout_lon_mean - t_Tout_lon_mean.mean(axis=time_axis)[:,:,None])**2, axis=time_axis)
     svar_T_adv_out_lon_mean = np.sum((t_T_adv_out_lon_mean - t_T_adv_out_lon_mean.mean(axis=time_axis)[:,:,None])**2, axis=time_axis)
-    svar_q_adv_out_lon_mean = np.sum((t_q_adv_out_lon_mean - p_q_adv_out_lon_mean.mean(axis=time_axis)[:,:,None])**2, axis=time_axis)
-    svar_q_auto_out_lon_mean = np.sum((t_q_auto_out_lon_mean - p_q_auto_out_lon_mean.mean(axis=time_axis)[:,:,None])**2, axis=time_axis)
-    svar_q_sed_flux_tot_lon_mean = np.sum((t_q_sed_flux_tot_lon_mean - p_q_sed_flux_tot_lon_mean.mean(axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_q_adv_out_lon_mean = np.sum((t_q_adv_out_lon_mean - t_q_adv_out_lon_mean.mean(axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_q_auto_out_lon_mean = np.sum((t_q_auto_out_lon_mean - t_q_auto_out_lon_mean.mean(axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_q_sed_flux_tot_lon_mean = np.sum((t_q_sed_flux_tot_lon_mean - t_q_sed_flux_tot_lon_mean.mean(axis=time_axis)[:,:,None])**2, axis=time_axis)
+
+    svar_Tout_lon_mean_ocean = np.nansum((t_Tout_lon_mean_ocean - np.nanmean(t_Tout_lon_mean_ocean, axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_T_adv_out_lon_mean_ocean = np.nansum((t_T_adv_out_lon_mean_ocean - np.nanmean(t_T_adv_out_lon_mean_ocean, axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_q_adv_out_lon_mean_ocean = np.nansum((t_q_adv_out_lon_mean_ocean - np.nanmean(t_q_adv_out_lon_mean_ocean, axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_q_auto_out_lon_mean_ocean = np.nansum((t_q_auto_out_lon_mean_ocean - np.nanmean(t_q_auto_out_lon_mean_ocean, axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_q_sed_flux_tot_lon_mean_ocean = np.nansum((t_q_sed_flux_tot_lon_mean_ocean - np.nanmean(t_q_sed_flux_tot_lon_mean_ocean, axis=time_axis)[:,:,None])**2, axis=time_axis)
+
+    svar_Tout_lon_mean_land = np.nansum((t_Tout_lon_mean_land - np.nanmean(t_Tout_lon_mean_land, axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_T_adv_out_lon_mean_land = np.nansum((t_T_adv_out_lon_mean_land - np.nanmean(t_T_adv_out_lon_mean_land, axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_q_adv_out_lon_mean_land = np.nansum((t_q_adv_out_lon_mean_land - np.nanmean(t_q_adv_out_lon_mean_land, axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_q_auto_out_lon_mean_land = np.nansum((t_q_auto_out_lon_mean_land - np.nanmean(t_q_auto_out_lon_mean_land, axis=time_axis)[:,:,None])**2, axis=time_axis)
+    svar_q_sed_flux_tot_lon_mean_land = np.nansum((t_q_sed_flux_tot_lon_mean_land - np.nanmean(t_q_sed_flux_tot_lon_mean_land, axis=time_axis)[:,:,None])**2, axis=time_axis)
+
 
     R2_Tout_lon_mean = 1- (sse_Tout_lon_mean/svar_Tout_lon_mean)
     R2_T_adv_out_lon_mean = 1 - (sse_T_adv_out_lon_mean/svar_T_adv_out_lon_mean)
@@ -277,10 +632,30 @@ def main_plotting(truth,
     R2_q_auto_out_lon_mean = 1 - (sse_q_auto_out_lon_mean/svar_q_auto_out_lon_mean) 
     R2_q_sed_flux_tot_lon_mean = 1 - (sse_q_sed_flux_tot_lon_mean/svar_q_sed_flux_tot_lon_mean)
 
-    field_list = [R2_T_adv_out_lon_mean, R2_q_adv_out_lon_mean, R2_Tout_lon_mean, 
+    R2_Tout_lon_mean_ocean = 1- (sse_Tout_lon_mean_ocean/svar_Tout_lon_mean_ocean)
+    R2_T_adv_out_lon_mean_ocean = 1 - (sse_T_adv_out_lon_mean_ocean/svar_T_adv_out_lon_mean_ocean)
+    R2_q_adv_out_lon_mean_ocean = 1 - (sse_q_adv_out_lon_mean_ocean/svar_q_adv_out_lon_mean_ocean)
+    R2_q_auto_out_lon_mean_ocean = 1 - (sse_q_auto_out_lon_mean_ocean/svar_q_auto_out_lon_mean_ocean) 
+    R2_q_sed_flux_tot_lon_mean_ocean = 1 - (sse_q_sed_flux_tot_lon_mean_ocean/svar_q_sed_flux_tot_lon_mean_ocean)
+
+    R2_Tout_lon_mean_land = 1- (sse_Tout_lon_mean_land/svar_Tout_lon_mean_land)
+    R2_T_adv_out_lon_mean_land = 1 - (sse_T_adv_out_lon_mean_land/svar_T_adv_out_lon_mean_land)
+    R2_q_adv_out_lon_mean_land = 1 - (sse_q_adv_out_lon_mean_land/svar_q_adv_out_lon_mean_land)
+    R2_q_auto_out_lon_mean_land = 1 - (sse_q_auto_out_lon_mean_land/svar_q_auto_out_lon_mean_land) 
+    R2_q_sed_flux_tot_lon_mean_land = 1 - (sse_q_sed_flux_tot_lon_mean_land/svar_q_sed_flux_tot_lon_mean_land)
+
+
+    field_list_all = [R2_Tout_lon_mean, R2_T_adv_out_lon_mean, R2_q_adv_out_lon_mean, 
               R2_q_auto_out_lon_mean, R2_q_sed_flux_tot_lon_mean]
 
-    five_panel_lat_pressure_cross_section(field_list=field_list, 
+    field_list_ocean = [R2_Tout_lon_mean_ocean, R2_T_adv_out_lon_mean_ocean, R2_q_adv_out_lon_mean_ocean, 
+              R2_q_auto_out_lon_mean_ocean, R2_q_sed_flux_tot_lon_mean_ocean]
+
+    field_list_land = [R2_Tout_lon_mean_land, R2_T_adv_out_lon_mean_land, R2_q_adv_out_lon_mean_land,
+              R2_q_auto_out_lon_mean_land, R2_q_sed_flux_tot_lon_mean_land]
+
+
+    five_panel_lat_pressure_cross_section(field_list=field_list_all, 
                                       x_values=lat_plot, 
                                       y_values=sigma_plot,  
                                         xlabel = "Latitudes", 
@@ -290,8 +665,114 @@ def main_plotting(truth,
                                       super_title= "Offline Fit", 
                                       base_dir=save_path+nametag,
                                       save_dir="/R2_Figures",
+                                      identifier="All_R2_",
                                       vertical_splice = z_dim,  
                                       )
+
+    five_panel_lat_pressure_cross_section(field_list=field_list_ocean, 
+                                      x_values=lat_plot, 
+                                      y_values=sigma_plot,  
+                                        xlabel = "Latitudes", 
+                                      ylabel="Pressure (sigma)", 
+                                      title_list = var_names, 
+                                    cbar_label= r"$R^2$", 
+                                      super_title= "Offline Fit", 
+                                      base_dir=save_path+nametag,
+                                      save_dir="/R2_Figures",
+                                      identifier="Ocean_R2_",
+                                      vertical_splice = z_dim,  
+                                      )
+
+
+    five_panel_lat_pressure_cross_section(field_list=field_list_land, 
+                                      x_values=lat_plot, 
+                                      y_values=sigma_plot,  
+                                        xlabel = "Latitudes", 
+                                      ylabel="Pressure (sigma)", 
+                                      title_list = var_names, 
+                                    cbar_label= r"$R^2$", 
+                                      super_title= "Offline Fit", 
+                                      base_dir=save_path+nametag,
+                                      save_dir="/R2_Figures",
+                                      identifier="Land_R2_",
+                                      vertical_splice = z_dim,  
+                                      )
+
+    #Calculate R2 with no z
+    sse_Tout_z_mean = ((t_Tout_z_mean - p_Tout_z_mean)**2).sum(axis=1)
+    sse_T_adv_out_z_mean = ((t_T_adv_out_z_mean - p_T_adv_out_z_mean)**2).sum(axis=1)
+    sse_q_adv_out_z_mean = ((t_q_adv_out_z_mean - p_q_adv_out_z_mean)**2).sum(axis=1)
+    sse_q_auto_out_z_mean = ((t_q_auto_out_z_mean - p_q_auto_out_z_mean)**2).sum(axis=1)
+    sse_q_sed_flux_tot_z_mean = ((t_q_sed_flux_tot_z_mean - p_q_sed_flux_tot_z_mean)**2).sum(axis=1)
+
+    #was [:,None]
+    svar_Tout_z_mean = np.sum((t_Tout_z_mean - t_Tout_z_mean.mean(axis=time_axis)[:,:,None])**2, axis=1)
+    svar_T_adv_out_z_mean = np.sum((t_T_adv_out_z_mean - t_T_adv_out_z_mean.mean(axis=time_axis)[:,:,None])**2, axis=1)
+    svar_q_adv_out_z_mean = np.sum((t_q_adv_out_z_mean - p_q_adv_out_z_mean.mean(axis=time_axis)[:,:,None])**2, axis=1)
+    svar_q_auto_out_z_mean = np.sum((t_q_auto_out_z_mean - p_q_auto_out_z_mean.mean(axis=time_axis)[:,:,None])**2, axis=1)
+    svar_q_sed_flux_tot_z_mean = np.sum((t_q_sed_flux_tot_z_mean - p_q_sed_flux_tot_z_mean.mean(axis=time_axis)[:,:,None])**2, axis=1)
+
+    R2_Tout_z_mean = 1- (sse_Tout_z_mean/svar_Tout_z_mean)
+    R2_T_adv_out_z_mean = 1 - (sse_T_adv_out_z_mean/svar_T_adv_out_z_mean)
+    R2_q_adv_out_z_mean = 1 - (sse_q_adv_out_z_mean/svar_q_adv_out_z_mean)
+    R2_q_auto_out_z_mean = 1 - (sse_q_auto_out_z_mean/svar_q_auto_out_z_mean) 
+    R2_q_sed_flux_tot_z_mean = 1 - (sse_q_sed_flux_tot_z_mean/svar_q_sed_flux_tot_z_mean)
+
+    print("shape of R2_Tout_z_mean", R2_Tout_z_mean.shape)
+    print("shape of R2_T_adv_out_z_mean", R2_T_adv_out_z_mean.shape)
+    print("shape of R2_q_adv_out_z_mean", R2_q_adv_out_z_mean.shape)
+    print("shape of R2_q_auto_out_z_mean", R2_q_auto_out_z_mean.shape)
+    print("shape of R2_q_sed_flux_tot_z_mean", R2_q_sed_flux_tot_z_mean.shape)
+    print("shape of lon_mesh", lon_mesh.shape)
+    print("shape of lat_mesh", lat_mesh.shape)
+
+
+    field_list_all_z = [ R2_Tout_z_mean, R2_T_adv_out_z_mean, R2_q_adv_out_z_mean,
+              R2_q_auto_out_z_mean, R2_q_sed_flux_tot_z_mean]
+
+
+
+    five_panel_lat_pressure_cross_section(field_list=field_list_all_z, 
+                                      x_values=lon_mesh, 
+                                      y_values=lat_mesh,  
+                                        xlabel = "Longitudes", 
+                                      ylabel="Latitudes", 
+                                      title_list = var_names, 
+                                    cbar_label= r"$R^2$", 
+                                      super_title= "Offline Fit", 
+                                      base_dir=save_path+nametag,
+                                      save_dir="/R2_Figures",
+                                      identifier="XY_All_R2_",
+                                      vertical_splice = 1000,  # a bit hacky but should work here
+                                      )
+
+
+
+    np.save("dummy_data/R2_T_adv_out_z_mean.npy", R2_T_adv_out_z_mean)
+    print(save_path + nametag)
+    
+    plot_r2_vs_surface_features(
+        R2_2D=R2_T_adv_out_z_mean,
+        land_fraction=land_mask,
+        surface_height=srf_height,
+        base_dir=save_path + nametag,
+        save_dir="/R2_Figures",
+        identifier="Lat_Lon_T_Adv_Out_R2_",
+        filename_prefix="T advection out",
+        title_suffix="(T_Adv_Out)"
+    )
+
+    plot_r2_vs_surface_features(
+        R2_2D=R2_q_adv_out_z_mean,
+        land_fraction=land_mask,
+        surface_height=srf_height,
+        save_dir="/R2_Figures",
+        identifier="Lat_Lon_Q_Adv_Out_R2_",
+        base_dir=save_path + nametag,
+        filename_prefix="Q advection out",
+        title_suffix="(Q_Adv_Out)"
+    )
+
 
 
     #latitude/pressure variance plots
@@ -708,7 +1189,6 @@ def main_plotting(truth,
     my_sigma = [0, 14, 29]
     #my_sigma = [0, 14]
     precise = [None, None, None]
-    #breakpoint()
     for i in range(len(my_sigma)):
         animation_generator_gif(
             x_whirl=p_Tout[my_sigma[i],:,:,:].squeeze(),

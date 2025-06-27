@@ -1,0 +1,29 @@
+filepath: "/ocean/projects/ees240018p/gmooers/GM_Data/POG_Correction/**0000[0123]**.nc4"
+savepath: "/ocean/projects/ees240018p/gmooers/GM_Data/training_data/Corrected_Training_Data/"
+levels: 49
+ground_levels: 1
+my_name: "cam_Input_Output_Data_"
+rewight_outputs: False
+file_start: 0
+file_end: 4
+shuffle: True
+polar_mask: False
+land_mask: False
+gSAM: False
+
+flag_dict:
+  Tin_feature: True
+  qin_feature: True
+  Terra_feature: False
+  Terraw_feature: False
+  predict_tendencies: True
+  skt: False
+  land_frac: True
+  sfc_pres: True
+  grid_cell_area: False
+  land_ice: False
+  sea_ice: False
+  veg: False
+  soil_temp: False
+  soil_water: False
+  tree_canopy: False

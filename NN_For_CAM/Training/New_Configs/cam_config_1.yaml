@@ -1,0 +1,62 @@
+name_dict:
+    id : 1505
+    nametag: 'CAM_Dense_wider_high_lr'
+    save_name: 'final_model.pth'
+    
+data_dict:
+    training_expt : "/ocean/projects/ees240018p/gmooers/GM_Data/training_data/CAM_OUTPUTS/CAM_Input_Output_Data_TTTTFTTfile_[0246]**0.nc"
+    test_expt : '/ocean/projects/ees240018p/gmooers/GM_Data/training_data/CAM_OUTPUTS/CAM_Input_Output_Data_TTTTFTTfile_800_to_-1.nc'
+    save_path: '/ocean/projects/ees240018p/gmooers/Investigations/Model_Performance/'
+    weights_path : null # or path
+    single_file: '/ocean/projects/ees240018p/gmooers/GM_Data/POG_Correction/DYAMOND2_coars_9216x4608x74_10s_4608_20200229230000_0000353880.atm.3D_resolved.nc4'
+    f_ppi : {'name': 'StandardScaler'} # scaling name left over from JN -- not sure if necessary
+    o_ppi : {'name': 'StandardScaler'} # scaling name left over from JN -- not sure if necessary
+    levels : 49
+    do_poles : True
+    input_vert_vars : ['Tin','qin','terra','sfc_pres']   
+    output_vert_vars : ['Tout', 'T_adv_out','q_adv_out','q_auto_out','q_sed_flux_tot']
+    rewight_outputs : True 
+    training_data_volume: 100
+    test_data_volume: 50
+    data_chunks: {'sample': 1024, 'lat': 426, 'lon': 768, 'z': 49}
+    dtype_size: 4
+    memory_fraction: 0.75
+    sym_log: False
+    t_adv_vert_scale: False
+    save_data_figs: True
+
+nn_dict:
+  do_nn: True
+  batch_norm: False
+  epochs: 40
+  epochs_small_lr: 15
+  n_layers: 5
+  lr: 0.0005
+  min_lr: 0.0005
+  max_lr: 0.005
+  lr_redux_factor: 10
+  step_size_up: 4000
+  batch_size: 1024
+  dropoff: 0.02
+  neural_network_name: "CustomNet"
+  conv_layer_configs:
+      - filters: 16
+        kernel: 5
+  layer_sizes: [512, 256, 128, 64]
+  activation_function: ReLU
+  criterion: MSELoss
+  lambda_smooth: 0.2
+  optimizer: Adam
+  num_workers: 1
+  cycle_momentum: False
+  torch_thread_number: 10
+  weighted_loss: False
+  t_adv_weight: 1.0
+  q_adv_weight: 1.0
+  conv: False
+
+
+
+post_processing_dict:
+    only_plot : False
+    plotting_path: '/ocean/projects/ees240018p/gmooers/Figures/NN_offline_figs/'

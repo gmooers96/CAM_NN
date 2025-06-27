@@ -12,10 +12,12 @@ import glob
 from os.path import exists
 from scipy.interpolate import interp1d
 
+# change this from 3.9 to 3.7 -- not sure....
 import advect_scalar3D_f2py_my_min2
+#import advect_scalar3D_f2py
 
 # 2D high-res output from Marat
-ncfile = '/ocean/projects/ees220005p/janniy/gsam_data/SAM7.7_test/DYAMOND2_9216x4608x74_10s_4608_20200214121500_0000220410.2D_atm.nc'
+ncfile = '/ocean/projects/ees240018p/gmooers/gsam_data/SAM7.7_test/DYAMOND2_9216x4608x74_10s_4608_20200214121500_0000220410.2D_atm.nc'
 f_solin = Dataset(ncfile, mode='r')
 topog_high = f_solin.variables['ZSFC'][:]  # m
 lat_high = f_solin.variables['lat'][:]  # m
@@ -25,7 +27,7 @@ f_solin.close()
 ## Griffin's comment -- was originally 1
 number_of_files = 10
 ## Griffin's comment - was originally 1080
-start_time=137880       
+start_time=1080       
 interval = 360 
 end_time = start_time  + interval * (number_of_files)
 
@@ -37,9 +39,13 @@ res = [12]
 dtn = 10
 
 
-
+# Griffin -- checked -- this flag still works
 experiment = 'DYAMOND2_coars_9216x4608x74_10s_4608'
-loaddir = '/ocean/projects/ees220005p/janniy/gsam_data/'
+
+
+### changed by griffin mooers for CAM resolution
+#loaddir = '/ocean/projects/ees220005p/janniy/gsam_data/'
+loaddir = '/ocean/projects/ees240018p/gmooers/gsam_data/cam_resolution_gsam/'
 
 if test_mode or compare_flag:
     #TO DO - will have to read the 3D hi-res files (or a chunk of them), and calculate outputs... Could do on part of the file...
@@ -48,18 +54,34 @@ if test_mode or compare_flag:
 else:
     filename = 'Dummy'
 
-savedir = '/ocean/projects/ees220005p/gmooers/GM_Data/'
-file_coarse1 = '/ocean/projects/ees220005p/janniy/gsam_data/DYAMOND2_coars_9216x4608x74_10s_4608_20200124120000_0000038880.atm.3DC.nc'
+### Changed by Griffin for CAM resolution
+savedir = '/ocean/projects/ees240018p/gmooers/GM_Data/CAM_DATA/'
+
+### griffin -- kept this the same because only vertical variables (z only) used
+file_coarse1 = '/ocean/projects/ees240018p/gmooers/gsam_data/DYAMOND2_coars_9216x4608x74_10s_4608_20200124120000_0000038880.atm.3DC.nc'
+
+
 #Read hires
 start = time.time()
 f = Dataset(file_coarse1, mode='r')
-lon = f.variables['lon'][:]
-lat = f.variables['lat'][:]
+#lon = f.variables['lon'][:]
+#lat = f.variables['lat'][:]
 z = f.variables['z'][:]
 zi = f.variables['zi'][:]
 rho = f.variables['rho'][:]  # m
 rhow2 = f.variables['rhoi'][:]  # m
 p = f.variables['p'][:]  # m
+
+f.close()
+
+file_coarse1 = '/ocean/projects/ees240018p/gmooers/gsam_data/cam_resolution_gsam/DYAMOND2_coars_9216x4608x74_10s_4608_20200124120000_0000038880.atm.3DC_camres.nc'
+
+
+#Read hires
+start = time.time()
+f = Dataset(file_coarse1, mode='r')
+lon = f.variables['lon'][:]
+lat = f.variables['lat'][:]
 
 f.close()
 
@@ -143,14 +165,18 @@ j_start,j_end = cfunc.calc_y_ind_edge_processor(ady_glob_high3, lat_high.shape[0
 
 
 # Calculating coarse topography related quantities.
-path_terra_coare = '/ocean/projects/ees220005p/janniy/python_fortran_coarse_graining/f2py_global_sam/files_coarse_JY/'
+path_terra_coare = '/ocean/projects/ees240018p/gmooers/gsam_data/python_fortran_coarse_graining/f2py_global_sam/files_coarse_JY/'
 terra_path = 'coarse_points.nc4'
+
+terra_points = np.zeros((lon_size, lat_size, nz_size))
+terra_tot = np.zeros((lon_size, lat_size, nz_size))
+
 if not os.path.isfile(path_terra_coare + terra_path):
     # Create files
     terra_points = np.zeros([lon_size, lat_size, nz_size])
     terra_tot = np.zeros([lon_size, lat_size, nz_size])
     for k in range(nz_size):
-        terra_w_path = '/ocean/projects/ees220005p/janniy/gsam_data/high_res_snapshot/DYAMOND2_9216x4608x74_10s_4608_TERR_MASKS_TERRA.atm.3D.nc'
+        terra_w_path = '/ocean/projects/ees240018p/gmooers/gsam_data/high_res_snapshot/DYAMOND2_9216x4608x74_10s_4608_TERR_MASKS_TERRA.atm.3D.nc'
         slice_ter_tot_surf = dict()
         d = Dataset(terra_w_path, 'r')
         data = d.variables['TERRA']
@@ -159,7 +185,7 @@ if not os.path.isfile(path_terra_coare + terra_path):
         d.close()
 
         terra_mvax = np.moveaxis(slice_ter_tot_surf['TERRA'], (0, 1, 2), (2, 1, 0))
-        aa, bb = terra_num_of_points(terra_mvax, lon_size, lat_size, k, k + 1, j_start, j_end, coarseness=12)
+        aa, bb = cfunc.terra_num_of_points(terra_mvax, lon_size, lat_size, k, k + 1, j_start, j_end, coarseness=12)
         terra_points[:, :, k] = aa[:, :, 0]
         terra_tot[:, :, k] = bb[:, :, 0]
         print('SAVE TERRA points (TODO)')
@@ -239,7 +265,7 @@ if not os.path.isfile(path_terra_coare + topog_path_mean):
     ind_start_terra_median = 74 - np.sum(terra_median, axis=2)
 
 
-    path_terra_coare = '/ocean/projects/ees220005p/janniy/python_fortran_coarse_graining/f2py_global_sam/files_coarse_JY/'
+    path_terra_coare = '/ocean/projects/ees240018p/gmooers/gsam_data/python_fortran_coarse_graining/f2py_global_sam/files_coarse_JY/'
     topog_path_mean = 'topog_cg.nc4'
     netxarr = xr.DataArray(
         data=np.moveaxis(topog_coarse_mean, (0, 1), (1, 0)).astype(np.float32),
@@ -443,11 +469,9 @@ n_files = np.size(file_times)
 
 print('yani11')
 # Loop over files
-for ifile, file_time in enumerate(file_times): # loop over
-    #breakpoint()
-    filename_wildcard = loaddir  + experiment + '*' + str(file_time).zfill(10)  + '.atm.3DC.nc'  # New version of data
-    filename_wildcard_2D = loaddir  + experiment + '*' + str(file_time).zfill(10)  + '.2DC_atm.nc' 
-
+for ifile, file_time in enumerate(file_times): # loop over 
+    filename_wildcard = loaddir  + experiment + '*' + str(file_time).zfill(10)  + '.atm.3DC_camres.nc'  # New version of data
+    filename_wildcard_2D = loaddir  + experiment + '*' + str(file_time).zfill(10)  + '.2DC_atm_camres.nc' 
     filename_coarse = glob.glob(filename_wildcard)
     filename_coarse_2D = glob.glob(filename_wildcard_2D)
     print(filename_coarse[0])
@@ -559,30 +583,59 @@ for ifile, file_time in enumerate(file_times): # loop over
     # % Step 02:07: Advect variables
     print('check if I need to calc ady differently (I think it should be done differently... )')
     start = time.time()
-    advect_scalar3D_f2py_my_min2.advect_scalar3d_f2py(qt_bound, u_bound, v_bound, w_bound, rho,
-                                                      rhow, dx, dy, dz, dtn, adz, ady_extend, mu_extend,
-                                                      muv_extend, q_flux_x_out,
-                                                      q_flux_y_out, q_flux_z_out, q_adv_tend_out, dosubtr=True,
-                                                      my_val=True, val_min=0)
 
-    qt = qt  + q_adv_tend_out*dtn
-    qt = np.maximum(qt,0.0)
-    print('afsasdf')
-    advect_scalar3D_f2py_my_min2.advect_scalar3d_f2py(qp_bound, u_bound, v_bound, w_bound, rho,
-                                                      rhow, dx, dy, dz, dtn, adz, ady_extend, mu_extend,
-                                                      muv_extend, qp_flux_x_out,
-                                                      qp_flux_y_out, qp_flux_z_out, qp_adv_tend_out, dosubtr=True,
-                                                      my_val=True, val_min=0)
-    qp = qp  + qp_adv_tend_out*dtn
-    qp = np.maximum(qp,0.0)
+    # check for qt flux
+    
+    #advect_scalar3D_f2py_my_min2.advect_scalar3d_f2py(qt_bound, u_bound, v_bound, w_bound, rho,
+    #                                                  rhow, dx, dy, dz, dtn, adz, ady_extend, mu_extend,
+    #                                                  muv_extend, q_flux_x_out,
+    #                                                  q_flux_y_out, q_flux_z_out, q_adv_tend_out, dosubtr=True,
+    #                                                  my_val=True, val_min=0)
+    
+    #qt = qt  + q_adv_tend_out*dtn
+    #qt = np.maximum(qt,0.0)
 
-    advect_scalar3D_f2py_my_min2.advect_scalar3d_f2py(tfull_bound, u_bound, v_bound, w_bound, rho,
-                                                      rhow, dx, dy, dz, dtn, adz, ady_extend, mu_extend,
-                                                      muv_extend, tfull_flux_x_out,
-                                                      tfull_flux_y_out, tfull_flux_z_out, tfull_adv_tend_out, dosubtr=True,
-                                                      my_val=True, val_min=0)
+    # added by Griffin to correct for scaling issues
 
-    tfull = tfull  + tfull_adv_tend_out*dtn
+    #breakpoint()
+    # rhow = 75 levels
+    # qp, w, t_full 74 levels
+    #qp_flux_z_out = rhow*qp*w
+    #tfull_flux_z_out = rhow*tfull*w
+    
+    #q_flux_z_out = rho*qt*w
+    #qp_flux_z_out = rho*qp*w
+    #tfull_flux_z_out = rho*tfull*w
+
+    print("Made it to the key part")
+
+    for k in range(nz_size):
+        kb = max(0,k-1)
+        tfull_flux_z_out[:,:,k] = 0.5*rhow[k]*w[:,:,k]*(tfull[:,:,k] + tfull[:,:,kb])
+        q_flux_z_out[:,:,k] = 0.5*rhow[k]*w[:,:,k]*(qt[:,:,k] + qt[:,:,kb])
+        qp_flux_z_out[:,:,k] = 0.5*rhow[k]*w[:,:,k]*(qp[:,:,k] + qp[:,:,kb])
+
+    print("Made it through the key part")
+
+    # original code 
+    
+    #advect_scalar3D_f2py_my_min2.advect_scalar3d_f2py(qp_bound, u_bound, v_bound, w_bound, rho,
+    #                                                  rhow, dx, dy, dz, dtn, adz, ady_extend, mu_extend,
+    #                                                  muv_extend, qp_flux_x_out,
+    #                                                  qp_flux_y_out, qp_flux_z_out, qp_adv_tend_out, dosubtr=True,
+    #                                                  my_val=True, val_min=0)
+    #qp = qp  + qp_adv_tend_out*dtn
+    #qp = np.maximum(qp,0.0)
+
+    #advect_scalar3D_f2py_my_min2.advect_scalar3d_f2py(tfull_bound, u_bound, v_bound, w_bound, rho,
+    #                                                  rhow, dx, dy, dz, dtn, adz, ady_extend, mu_extend,
+    #                                                  muv_extend, tfull_flux_x_out,
+    #                                                  tfull_flux_y_out, tfull_flux_z_out, tfull_adv_tend_out, dosubtr=True,
+    #                                                  my_val=True, val_min=0)
+
+    #tfull = tfull  + tfull_adv_tend_out*dtn
+
+    #breakpoint()
 
 
     print('May need to approximate the error that I do not directly calculate the advection of H_L instead of h_L')
@@ -614,10 +667,17 @@ for ifile, file_time in enumerate(file_times): # loop over
 
     # % Step 04:01:  Calculate subgrid terms
     # advection:
-    t_flux_z_out_subgrid = cfunc.calc_subgrid(t_flux_z_out_coarse, t_flux_z_out)
-    tfull_flux_z_out_subgrid = cfunc.calc_subgrid(tfull_flux_z_out_coarse, tfull_flux_z_out)
-    q_flux_z_out_subgrid = cfunc.calc_subgrid(q_flux_z_out_coarse, q_flux_z_out)
-    qp_flux_z_out_subgrid = cfunc.calc_subgrid(qp_flux_z_out_coarse, qp_flux_z_out)
+    # Griffin Mooers -- added terra pointd/ terra tot to correct for flux on steep terrain?
+    # are they ints
+    #t_flux_z_out_subgrid = cfunc.calc_subgrid(t_flux_z_out_coarse, t_flux_z_out) #* terra_points / terra_tot
+    #tfull_flux_z_out_subgrid = cfunc.calc_subgrid(tfull_flux_z_out_coarse, tfull_flux_z_out) #* terra_points / terra_tot
+    #q_flux_z_out_subgrid = cfunc.calc_subgrid(q_flux_z_out_coarse, q_flux_z_out) #* terra_points / terra_tot
+    #qp_flux_z_out_subgrid = cfunc.calc_subgrid(qp_flux_z_out_coarse, qp_flux_z_out) #* terra_points / terra_tot
+
+    t_flux_z_out_subgrid = t_flux_z_out_coarse - t_flux_z_out #* terra_points / terra_tot
+    tfull_flux_z_out_subgrid = tfull_flux_z_out_coarse - tfull_flux_z_out #* terra_points / terra_tot
+    q_flux_z_out_subgrid = q_flux_z_out_coarse - q_flux_z_out #* terra_points / terra_tot
+    qp_flux_z_out_subgrid = qp_flux_z_out_coarse - qp_flux_z_out #* terra_points / terra_tot
 
     print('I want to interpolate to the reference sigma coordinate here. Once with mean topography once with median topography')
     print('Fields to interpolate: All outputs and inputs!,topog_mean,topog_median')
@@ -697,8 +757,8 @@ for ifile, file_time in enumerate(file_times): # loop over
             while tabs[i,j,first_z_ind] == 0: #this is a fix to prevent the lower level to be where the temperature is not defined
                 first_z_ind = first_z_ind  + 1
                 dum_i = dum_i + 1
-                if dum_i > 2:
-                    print(dum_i,i,j)
+                #if dum_i > 2:
+                    #print(dum_i,i,j)
             if first_z_ind == 0:
                 tabs_sigma[i, j, :] = tabs[i, j, :]
                 qt_sigma[i, j, :] = qt[i, j, :]

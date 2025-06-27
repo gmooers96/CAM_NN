@@ -1,9 +1,9 @@
 import numpy as np
 from sklearn import preprocessing, metrics
-import sklearn
 import scipy.stats
 import pickle
 import warnings
+#import src.atmos_physics as atmos_physics
 import atmos_physics as atmos_physics
 import pandas as pd
 from netCDF4 import Dataset
@@ -13,190 +13,164 @@ import torch.nn.functional as F
 import torch.utils.data as Data
 import torchvision
 from torch import nn, optim
-import xarray as xr
 import pdb
-import math
 
+def LoadData(filename, max_z, input_vert_vars, output_vert_vars, all_ys=True, ind_y=None, n_trn_exs=None,
+             rain_only=False, no_cos=True, verbose=False, use_rh=False, wind_input = False, exclusion_flag=False,
+             ind1_exc = 0, ind2_exc=0, rewight_outputs = False):
+    """v2 of the script to load data. See prep_convection_output.py for how
+       the input filename is generated.
 
-def train_percentile_calc(percent, ds):
-    sample = ds.sample
-    lon = ds.lon
-    times = int(len(sample) / len(lon))
-    proportion = math.floor(times*percent/100.)
-    splicer = int(proportion*len(lon))
-    return splicer
+    Args:
+      filename:  The file to be loaded.
+      max_z:    The topmost model level for which to load data. 
+      all_ys:  Logical value for whether to load data from all y's
+      ind_y:    If all_ys is false, give the index value for the
+                 y at which to load data.
+      n_trn_exs: Number of training examples to load. If set to None, or
+                 if requested number exceeds max available will load all.
+      rain_only:  If true, only return training examples of when it is raining
+      no_cos:   If true, don't use cos(lat) weighting for loading training examples
+      verbose:   If true, prints some basic stats about training set
 
-# TODO:@gmooers add in a z splicer and a pole splicer
-def LoadDataStandardScaleData_v2(traindata,
-                                 testdata,
-                                 input_vert_vars,
-                                 output_vert_vars,
-                                 poles,
-                                 training_data_volume,
-                                 chunk={'sample': 1024, 'lat': 426, 'lon': 768, 'z': 49},
-                                 weights=None,
-                                ):
+    Returns:
+      f       : 2-d numpy array of input features (m_training examples x
+                n_input features). 
+      o       : 2-d numpy array of output targets (m_traning examples x
+                n_output targets).
     """
+    # Data to read in is n_lev n_y (SH & NH) n_samples
+    # Samples are quasi indpendent with only a few (e.g. 10) from each y
+    data_l = pickle.load(open(filename, 'rb'))
 
-    TODO: gmooers
-    """
+    varis = input_vert_vars + output_vert_vars
+    v = dict()
 
-    # open the xarray data file
-    # works on the safe janni data
-    #train_variables = xr.open_mfdataset(traindata, chunks=chunk)
+    for ind,var in enumerate(varis,start=0):
+        v[var] = np.float32(data_l[ind]) # I put it as float 32 since some of the python functions that I use have a problem with float16.
+        if ind==len(varis)-1:
+            y = data_l[ind+1]
+            z = data_l[ind + 2]
+            p = data_l[ind + 3]
+            rho = data_l[ind + 4]
+            if rewight_outputs:
+                print('weights to rescale outputs.')
+                weight_list = data_l[ind + 5]
+            else:
+                weight_list = [1,1] # Not sure this will be used...
 
-    train_variables = xr.open_mfdataset(traindata, chunks=chunk, combine='nested', concat_dim='sample')
-
-    # calculate a training data percentage
-    training_data_percentage = train_percentile_calc(training_data_volume, train_variables)
-
-    # get the apropriate slice -- this is temporarily modified
-    train_variables = train_variables.isel(sample=slice(0, training_data_percentage))
-    #train_variables = train_variables.isel(sample=slice(0, 1000)) # temporary
-
-    # not sure what this line does or why necessary
-    my_train_variables = train_variables.variables 
-
-    # repeat above but for the test data
-    test_variables = xr.open_mfdataset(testdata, chunks=chunk, combine='nested', concat_dim='sample')
-    #test_variables = test_variables.isel(sample=slice(0, 1000)) # temporary
-    my_test_variables = test_variables.variables
-
-    # TODO:@gmooers -- make the below a stronger code that can work for None type
-    if weights is not None:
-        weight_variables = xr.open_dataset(weights, chunks=chunk)
-        my_weight_variables = weight_variables.norms.values
-
-    # build dictionaries for the inputs and outputs fro train/test data
-    train_input_variable_dict = dict()
-    train_output_variable_dict = dict()
-    test_input_variable_dict = dict()
-    test_output_variable_dict = dict()
-
-    # I think preprocessing dicts to hold a standard scalar
-    train_inputs_pp_dict = dict()
-    train_outputs_pp_dict = dict()
-
-    # new dictionaries for the transformed (scaled) data 
-    train_inputs_transformed_data = dict()
-    test_inputs_transformed_data = dict()
-    train_outputs_transformed_data = dict()
-    test_outputs_transformed_data = dict()
-    
-    print('Inputs')
-
-    # deal with the training data -- loop over each variable in the input vector
-    for i in range(len(input_vert_vars)):
-        print(input_vert_vars[i])
-        # extract a given input variable
-        my_train_data = my_train_variables[input_vert_vars[i]]
-        my_test_data = my_test_variables[input_vert_vars[i]]
-
-        # if it is a scalar (sfc_pres, land_frac), add a vertical dim of 1 in front of the array
-        if len(my_train_data.shape) == 1:
-            my_train_data = xr.DataArray(my_train_data).expand_dims(dim={"z": 1})
-            my_train_data = my_train_data.transpose("z", ...)
-
-            my_test_data = xr.DataArray(my_test_data).expand_dims(dim={"z": 1})
-            my_test_data = my_test_data.transpose("z", ...)
+    # Added this to
+    if exclusion_flag:
+        exclution_lat_list_1 = list(range(90 - ind2_exc, 90 - ind1_exc))  # list(range(0, 90))
+        exclution_lat_list_2 = list(range(90 + ind1_exc, 90 + ind2_exc))
+        exclution_lat_list = exclution_lat_list_1 + exclution_lat_list_2
+        if len(exclution_lat_list)>0:
+            y_tot_len = y.shape[0]
+            # y2 = np.delete(y, exclution_lat_list, axis=0)
+            for ind,var in enumerate(varis,start=0):
+                dim_of_lat = v[var].shape.index(y_tot_len)
+                v[var] = np.delete(v[var], exclution_lat_list, axis=dim_of_lat)
+            print('I chose a subset of y indices for generalization tests.  ')
 
 
-        # put the data in the form (sample, shape {e.g. z height}) to correctly pass into StandardScaler
-        # convert to numpy here for simplicity -- this may need to change later for memory
-        train_input_variable_dict[input_vert_vars[i]] = my_train_data.transpose('sample', 'z').values
-        test_input_variable_dict[input_vert_vars[i]] = my_test_data.transpose('sample', 'z').values
-
-        # put standard scalars in a dictionary to process each input separately
-        train_inputs_pp_dict[input_vert_vars[i]] = sklearn.preprocessing.StandardScaler()
 
 
-        #fit the standard scalar to the training data
-        
-        # case of vertical column -- e.g. temp or humidity -- need to scale each level separately
-        if train_input_variable_dict[input_vert_vars[i]].shape[1] > 1:
+    # Limit levels to those specified
+    ind_z = np.less_equal(z, max_z)
+    z = z[ind_z]
+    p = p[ind_z]
+    rho = rho[ind_z]
 
-            # fit the standard scalar to the training data; 0 ensures it is applied colm
-            np.apply_along_axis(
-                lambda x: train_inputs_pp_dict[input_vert_vars[i]].fit(
-                    x.reshape(-1, 1)), 0, train_input_variable_dict[input_vert_vars[i]])
-            
-            # scale the training data based on the fit applied above
-            # the numpy squeeze gets rid of the extra dimension created by the level by level scaling
-            train_inputs_transformed_data[input_vert_vars[i]] = np.apply_along_axis(
-                lambda x: train_inputs_pp_dict[input_vert_vars[i]].transform(
-                    x.reshape(-1, 1)), 0, train_input_variable_dict[input_vert_vars[i]]).squeeze()
 
-            # scale the test data based on the fit above
-            test_inputs_transformed_data[input_vert_vars[i]] = np.apply_along_axis(
-                lambda x: train_inputs_pp_dict[input_vert_vars[i]].transform(
-                    x.reshape(-1, 1)), 0, test_input_variable_dict[input_vert_vars[i]]).squeeze()
-            
-        # case of scalar with z of 1
+    rank_of_vars = len(v[var].shape)
+    # Reshape the arrays
+    for var in varis:
+        # Change shape of data to be n_samp n_z
+        if (v[var].shape[0] > 1 and len(v[var].shape) == 3 and v[var].shape[0]!=360 and v[var].shape[0]!=45 and v[var].shape[0]!=90): 
+            if all_ys:
+                if no_cos:
+                    v[var] = reshape_all_ys(v[var], ind_z[0:v[var].shape[0]])
+                else:
+                    v[var] = reshape_cos_ys(v[var], ind_z[0:v[var].shape[0]], y)
+            else:
+                if ind_y is not None:
+                    v[var] = reshape_one_y(v[var], ind_z[0:v[var].shape[0]], ind_y)
+                else:
+                    raise TypeError('Need to set an index value for ind_y')
+        elif len(v[var].shape) == 2: 
+            if all_ys:
+                v[var] = v[var].swapaxes(0, 1)
+                v[var] = v[var].reshape(-1,1) 
+            else:
+                if ind_y is not None:
+                    v[var] = reshape_one_y(v[var], ind_z,ind_y)
+                else:
+                    raise TypeError('Need to set an index value for ind_y')
+        elif (v[var].shape[0] > 1 and len(v[var].shape) == 4): 
+            if all_ys:
+                if no_cos:
+                    v[var] = reshape_all_ys_4d(v[var], ind_z[0:v[var].shape[0]])
+                else:
+                    TypeError('Need to set an index value for ind_y 4 for with cosine option')
+            else:
+                if ind_y is not None:
+                    v[var] = reshape_one_y(v[var], ind_z[0:v[var].shape[0]], ind_y)
+                else:
+                    raise TypeError('Need to set an index value for ind_y 4')
+
+        elif ((v[var].shape[0] == 360 or v[var].shape[0] == 45 or v[var].shape[0] == 90) and len(v[var].shape) == 3):  
+            if all_ys:
+                if no_cos:
+                    v[var] = reshape_all_ys_4d(v[var], ind_z[0:1])
+                else:
+                    TypeError('Need to set an index value for ind_y 4 for with cosine option')
+            else:
+                if ind_y is not None:
+                    v[var] = reshape_one_y(v[var], ind_z[0:1], ind_y)
+                else:
+                    raise TypeError('Need to set an index value for ind_y 4')
+
+
         else:
-            # fit the standard scalar to the training data
-            train_inputs_pp_dict[input_vert_vars[i]].fit(train_input_variable_dict[input_vert_vars[i]])
+            raise TypeError('There is a variable that has larger dimentions than 2 but it is not treated properly') 
 
-            # scale the training data based on the fit applied above
-            train_inputs_transformed_data[input_vert_vars[i]] = train_inputs_pp_dict[input_vert_vars[i]].transform(
-                train_input_variable_dict[input_vert_vars[i]])
+    # Use relative humidity as a feature
+    if use_rh: 
+      # define generalized rh as qt/qsat based on coarse-grained qt and T
+      p_Pa = p*100 # p is in hPa
+      v['qin'] = v['qin']/atmos_physics.sam_qsat(v['Tin'],p_Pa[None,:])
 
-            # scale the test data based on the fit applied above
-            test_inputs_transformed_data[input_vert_vars[i]] = train_inputs_pp_dict[input_vert_vars[i]].transform(
-                test_input_variable_dict[input_vert_vars[i]])
-    
-    print('Outputs')  
-    
-    for i in range(len(output_vert_vars)):
-        print(output_vert_vars[i])
-        # extract a given output variable
-        my_train_data = my_train_variables[output_vert_vars[i]]
-        my_test_data = my_test_variables[output_vert_vars[i]]
+     
+    # Randomize the order of these events to ensure different y's are mixed up
+    np.random.seed(123) # seed random number generator so always get same set of data when call this function (e.g., if call again to make plots)
+    m = v[input_vert_vars[0]].shape[0]
 
-        # put the data in the form (sample, shape {e.g. z height}) to correctly pass into StandardScaler
-        # convert to numpy here for simplicity -- this may need to change later for memory
-        train_output_variable_dict[output_vert_vars[i]] = my_train_data.transpose('sample', 'z').values
-        test_output_variable_dict[output_vert_vars[i]] = my_test_data.transpose('sample', 'z').values
+    if rank_of_vars == 4: 
+        print('We have 4D variables - xy structure')
+    else:
+        randind = np.random.permutation(m)
+        for var in varis:
+            v[var] = v[var][randind, :]
 
-        # put standard scalars in a dictionary to process each output separately
-        train_outputs_pp_dict[output_vert_vars[i]] = sklearn.preprocessing.StandardScaler()
+    # Concatenate feature and output variables together
+    f = pack_list(v, input_vert_vars)
+    o = pack_list(v, output_vert_vars)
 
-        # fit the standard scalar to the training data
-        train_outputs_pp_dict[output_vert_vars[i]].fit(train_output_variable_dict[output_vert_vars[i]])
+    if rain_only:
+       raise ValueError('rain_only not implemented')
 
-        # scale the training data based on the fit applied above
-        train_outputs_transformed_data[output_vert_vars[i]] = train_outputs_pp_dict[output_vert_vars[i]].transform(
-            train_output_variable_dict[output_vert_vars[i]])
-
-        # scale the test data based on the fit applied above
-        test_outputs_transformed_data[output_vert_vars[i]] = train_outputs_pp_dict[output_vert_vars[i]].transform(
-            test_output_variable_dict[output_vert_vars[i]])
-
-        
+    # Limit to only certain events if requested
+    if n_trn_exs is not None:
+        if n_trn_exs > o.shape[0]:
+            warnings.warn('Requested more samples than available. Using the ' +
+                          'maximum number available')
+            n_trn_exs = o.shape[0]
+        ind = np.arange(n_trn_exs)
+        f = f[ind, :]
+        o = o[ind, :]
 
 
-    # build a numpy array for training/test inputs/outputs of shape (sample, features)
-   
-    train_inputs = np.concatenate(
-        [train_inputs_transformed_data[x] for x in train_inputs_transformed_data], 1)
-    test_inputs = np.concatenate(
-        [test_inputs_transformed_data[x] for x in test_inputs_transformed_data], 1)
-    train_outputs = np.concatenate(
-        [train_outputs_transformed_data[x] for x in train_outputs_transformed_data], 1)
-    test_outputs = np.concatenate(
-        [test_outputs_transformed_data[x] for x in test_outputs_transformed_data], 1)
-
-    # this may not be necessary
-    train_inputs_original = np.concatenate(
-        [train_input_variable_dict[x] for x in train_input_variable_dict], 1)
-    test_inputs_original = np.concatenate(
-        [test_input_variable_dict[x] for x in test_input_variable_dict], 1)
-    train_outputs_original = np.concatenate(
-        [train_output_variable_dict[x] for x in train_output_variable_dict], 1)
-    test_outputs_original = np.concatenate(
-        [test_output_variable_dict[x] for x in test_output_variable_dict], 1)
-
-    # TODO:@gmooers -- chanbge the outputs to only what is necessary
-    return (train_inputs, test_inputs, train_outputs, test_outputs, test_outputs_original, train_inputs_pp_dict, train_outputs_pp_dict, "Std_Scalar")
+    return f, o, y, z, rho, p , weight_list
 
 
 def reshape_cos_ys(z, ind_z, y, is_sfc=False):
@@ -430,6 +404,7 @@ def transform_data_generalized(ppi, f_pp_dict, f_dict, input_vert_vars, z,scale_
         trans_data_dic = dict()
         for name in input_vert_vars:
             if scale_per_column:
+                # Griffin Comment -- Very hacky change
                 try:
                     trans_data_dic[name] = f_pp_dict[name].transform(f_dict[name])
                 except ValueError:
@@ -475,23 +450,7 @@ def inverse_transform_data_generalized(ppi, f_pp_dict, f_dict, input_vert_vars,
     return return_data
 
 
-def inverse_transform_data_generalized_big_data(ppi, f_pp_dict, f_dict, input_vert_vars,
-                                       z,scale_per_column=False,rewight_outputs=False,weight_list=[1,1]):
 
-    trans_data_dic = dict()
-    if rewight_outputs: 
-        for ind, name in enumerate(input_vert_vars,start=0):
-            f_dict[name] = f_dict[name]/weight_list[ind]
-
-    
-    for name in input_vert_vars:
-        if scale_per_column: 
-            trans_data_dic[name] = f_pp_dict[name].inverse_transform(f_dict[name])
-        else: 
-            trans_data_dic[name] = np.reshape(f_pp_dict[name].inverse_transform(np.reshape(f_dict[name],(-1,1))),(f_dict[name].shape[0],f_dict[name].shape[1]))
-    return_data = pack_list(trans_data_dic,input_vert_vars)
-    # Return a numpy array of the transformed data output
-    return return_data
 
 
 # Transform data using initialized scaler
@@ -565,42 +524,6 @@ def load_one_y(f_ppi, o_ppi, f_pp, o_pp, est, ind_y, datafile, max_z, input_vert
 
     return o_dict, o_pred_dict
 
-
-def load_one_y_big_data(f_ppi, o_ppi, f_pp, o_pp, est, ind_y, datafile, max_z, input_vert_vars, output_vert_vars, input_vert_dim, output_vert_dim,
-                 n_trn_exs, rain_only, no_cos, use_rh, wind_input = False,scale_per_column=False,
-                 rewight_outputs=False,weight_list=[1,1],do_nn=False):
-    """Returns n_samples 2*n_z array of true and predicted values
-       at a given y"""
-    
-    
-    f, o, y, z, rho, p, weight_list = \
-        LoadDataStandardScaleData_v2(datafile, max_z, input_vert_vars, output_vert_vars, all_ys=False, ind_y=ind_y,
-                 verbose=False, n_trn_exs=None, rain_only=rain_only, 
-                 no_cos=no_cos, use_rh=use_rh, wind_input = wind_input, rewight_outputs =rewight_outputs )
-    # Calculate predicted output
-
-    f_dict = unpack_list(f, input_vert_vars,input_vert_dim)
-    f_scl_dict = transform_data_generalized(f_ppi, f_pp, f_dict, input_vert_vars, z,scale_per_column, rewight_outputs=False)
-    # f_scl = transform_data(f_ppi, f_pp, f, z)
-    f_scl = pack_list(f_scl_dict, input_vert_vars)
-
-    if do_nn:
-        tmp_f_scl = torch.from_numpy(f_scl)
-        est.eval()
-        o_pred_scl = est(tmp_f_scl.float()) 
-        o_pred_scl = o_pred_scl.detach().numpy()
-    else:
-        o_pred_scl = est.predict(f_scl)
-    o_pred_scl_dict = unpack_list(o_pred_scl, output_vert_vars,output_vert_dim)
-    o_pred = inverse_transform_data_generalized(o_ppi, o_pp, o_pred_scl_dict,output_vert_vars, z,scale_per_column
-                                                ,rewight_outputs=rewight_outputs,weight_list=weight_list)
-    o_pred_dict = unpack_list(o_pred, output_vert_vars,output_vert_dim)
-
-    o_dict = unpack_list(o, output_vert_vars,output_vert_dim)
-
-
-    return o_dict, o_pred_dict
-
 def stats_by_yz(f_ppi, o_ppi, f_pp, o_pp, est, y, z, rho, datafile, n_trn_exs, input_vert_vars, output_vert_vars,
                 input_vert_dim, output_vert_dim, rain_only, no_cos, use_rh, wind_input = False,scale_per_column=False,
                 rewight_outputs=False,weight_list=[1,1],do_nn=False):
@@ -618,7 +541,7 @@ def stats_by_yz(f_ppi, o_ppi, f_pp, o_pp, est, y, z, rho, datafile, n_trn_exs, i
     #
     for i in range(len(y)):
         o_true_dict, o_pred_dict = \
-            load_one_y_big_data(f_ppi, o_ppi, f_pp, o_pp, est, i, datafile,
+            load_one_y(f_ppi, o_ppi, f_pp, o_pp, est, i, datafile,
                          np.max(z), input_vert_vars, output_vert_vars, input_vert_dim, output_vert_dim, n_trn_exs, rain_only,
                          no_cos, use_rh, wind_input = wind_input,scale_per_column = scale_per_column,
                          rewight_outputs=rewight_outputs,weight_list=weight_list,do_nn=do_nn)
@@ -683,34 +606,33 @@ def GetDataPath(training_expt, wind_input = False,is_cheyenne=False,full_data_se
     return datadir, trainfile, testfile, pp_str
 
 
-def get_f_o_pred_true(est_str, datadir, training_expt, training_file, testing_file, zdim, max_z, input_vert_vars, output_vert_vars,input_vert_dim,output_vert_dim,
+
+def get_f_o_pred_true(est_str, training_file, max_z, input_vert_vars, output_vert_vars,input_vert_dim,output_vert_dim,
                       all_ys=True, ind_y=None, 
                       n_trn_exs=None, rain_only=False,  
                       no_cos=False, use_rh=False, wind_input = False, scale_per_column=False,
                       rewight_outputs=False,weight_list=[1,1],is_cheyenne=False, do_nn =False):
     # Load model and preprocessors
+
     base_dir = '/ocean/projects/ees220005p/gmooers/GM_Data/'
-    if rewight_outputs == True:
-        my_weights = datadir + training_expt + "_weight.nc"
-        weight_variables = xr.open_dataset(my_weights)
-        weights = weight_variables.norms.values
-    else:
-        weights=[1,1]
-        my_weights=None
-    
+
     est, _, errors, f_ppi, o_ppi, f_pp, o_pp, y, z, _, _ = \
         pickle.load(open(base_dir + 'mldata_tmp/regressors/' + est_str + '.pkl', 'rb'))
     # Load raw data from file
-    
-    _, f_scl, _, otrue_scl, _, f, _, otrue, _, _, _ = LoadDataStandardScaleData_v2(training_file,
-                                 testing_file,
-                                 input_vert_vars,
-                              output_vert_vars,
-                              zdim,
-                              weights=my_weights
-                              
-                                 
-    )
+    f, otrue, _, _, _, _, weight_list = \
+        LoadData(training_file, max_z=max_z, input_vert_vars=input_vert_vars, output_vert_vars=output_vert_vars, all_ys=all_ys, ind_y=ind_y, n_trn_exs=n_trn_exs, rain_only=rain_only, no_cos=no_cos, use_rh=use_rh, wind_input = wind_input, rewight_outputs =rewight_outputs )
+    print('JY - added weight list to plot - need to think if necessary')
+    # Scale true values
+    otrue_dict = unpack_list(otrue,output_vert_vars,output_vert_dim)
+    otrue_scl_dict = transform_data_generalized(o_ppi, o_pp, otrue_dict,output_vert_vars, z,scale_per_column, rewight_outputs=rewight_outputs,weight_list=weight_list)
+    otrue_scl= pack_list(otrue_scl_dict, output_vert_vars)
+
+
+    # Apply f preprocessing to scale f-data and predict output
+    #
+    f_dict = unpack_list(f, input_vert_vars, input_vert_dim)
+    f_scl_dict = transform_data_generalized(f_ppi, f_pp, f_dict, input_vert_vars, z,scale_per_column,rewight_outputs=False)
+    f_scl = pack_list(f_scl_dict, input_vert_vars)
 
     if do_nn:
         tmp_f_scl = torch.from_numpy(f_scl)
@@ -719,10 +641,10 @@ def get_f_o_pred_true(est_str, datadir, training_expt, training_file, testing_fi
         opred_scl=opred_scl.detach().numpy()
     else:
         opred_scl = est.predict(f_scl) 
-    
     opred_scl_dict = unpack_list(opred_scl, output_vert_vars, output_vert_dim)
-    opred = inverse_transform_data_generalized_big_data(o_ppi, o_pp, opred_scl_dict,output_vert_vars, z, scale_per_column,
-                                               rewight_outputs=rewight_outputs, weight_list=weights)
+    opred = inverse_transform_data_generalized(o_ppi, o_pp, opred_scl_dict,output_vert_vars, z, scale_per_column,
+                                               rewight_outputs=rewight_outputs,weight_list=weight_list)
+
     return f_scl, opred_scl, otrue_scl, f, opred, otrue
 
 

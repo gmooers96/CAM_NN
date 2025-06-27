@@ -15,6 +15,6 @@ module purge
 
 source /jet/home/gmooers/miniconda3/bin/activate torchenv
 
-cd /ocean/projects/ees240018p/gmooers/Regridding/
+cd /ocean/projects/ees240018p/gmooers/CAM_NN/NN_For_CAM/Regridder/
 
-python3 regridder.py
+python3 new_regridder_terrain_info.py

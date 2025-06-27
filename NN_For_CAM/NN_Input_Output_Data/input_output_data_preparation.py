@@ -1,23 +1,16 @@
 ### section to force print statement in slurm logging
 import sys
 print("Job started")
-sys.stdout.flush()
-
+#sys.stdout.flush()
 import yaml
 import numpy as np
 import glob
 import atmos_physics as atmos_physics
-import sys
 import random 
 import pdb
-import math
 import xarray as xr
-from dask.distributed import Client, LocalCluster
-import dask.array as da
-import os
 
 from train_test_generator_helper_functions import  create_specific_data_string_desc,  calculate_renormalization_factors_sample
-
 
 def build_training_dataset(config_file):
     """Builds training and testing datasets."""
@@ -42,16 +35,23 @@ def build_training_dataset(config_file):
     rewight_outputs=config.get('rewight_outputs')
     shuffle=config.get('shuffle')
     subset=config.get('subset')
+    polar_mask=config.get('polar_mask')
+    land_mask=config.get('land_mask')
+    gSAM = config.get('gSAM')
 
     # this collects EVERY coarse-grained data file
-    all_files = sorted(glob.glob(filepath))
+    all_files_original = sorted(glob.glob(filepath))
     
     # Select the subset of the data we want to preprocess
-    if subset is True:
-        all_files = all_files[filestart:fileend]
+    all_files = all_files_original[filestart:fileend]
     # shuffles the order of the preprocessed data files for opening temporally if set to True
     if shuffle is True:
         random.shuffle(all_files)
+
+    print("File names shuffled")
+
+    
+    # original code
     variables = xr.open_mfdataset(all_files)
     print("filepath loaded")
   
@@ -59,38 +59,53 @@ def build_training_dataset(config_file):
     x = variables.lon  # m
     y = variables.lat  # m
     z = variables.z  # m
-    p = variables.p  # hPa
-    rho = variables.rho  # kg/m^3
+    #p = variables.p  # hPa
+    #rho = variables.rho  # kg/m^3
     n_x = x.size
     n_y = y.size
     n_z = z.size
     n_files = len(variables.time) #typically 160
+
+    hr_variables = xr.open_dataset('/ocean/projects/ees240018p/gmooers/GM_Data/POG_Correction/DYAMOND2_coars_9216x4608x74_10s_4608_20200301000000_0000354240.atm.3D_resolved.nc4')
+
+    p = hr_variables.p  # hPa
+    rho = hr_variables.rho  # kg/m^3
 
     print("dimensions in script")
 
     #default on
     #TODO:@gmooers Customize for gSAM -- right now this only works for CAM
     if flag_dict['grid_cell_area']:
-        area = np.load("/ocean/projects/ees240018p/gmooers/Githubs/Neural_nework_parameterization/NN_training/src/CAM_HPO/Testing_log/temp_data/cam_grid_area_sizes.npy")
+        if gSAM == True:
+            area = np.load("/ocean/projects/ees240018p/gmooers/Githubs/Neural_nework_parameterization/NN_training/src/CAM_HPO/Testing_log/temp_data/gsam_grid_area_sizes.npy")
+        else:
+            area = np.load("/ocean/projects/ees240018p/gmooers/Githubs/Neural_nework_parameterization/NN_training/src/CAM_HPO/Testing_log/temp_data/cam_grid_area_sizes.npy")
 
         
     if flag_dict['land_frac']:
-        #terra = xr.DataArray.squeeze(variables.TERRA[:,:ground_levels])
-        terra = np.load("/ocean/projects/ees240018p/gmooers/Githubs/Neural_nework_parameterization/NN_training/src/CAM_HPO/Testing_log/temp_data/lat_lon_grid_regridded_for_CAM.npy")
+        if gSAM == True:
+            land_mask_path = '/ocean/projects/ees240018p/gmooers/gsam_data/DYAMOND2_coars_9216x4608x74_10s_4608_20200301000000_0000354240.2DC_atm.nc'
+            land_mask_ds = xr.open_dataset(land_mask_path)
+            terra = np.squeeze(land_mask_ds.LANDMASK.values)
+        else:
+            land_mask_path = '/ocean/projects/ees240018p/gmooers/CAM/aqua_sst_YOG_f09.cam.h0.0001-04-01-00000.nc'
+            land_mask_ds = xr.open_dataset(land_mask_path)
+            terra = np.squeeze(land_mask_ds.LANDFRAC.values)[0,:,:]
 
-    #default on
+        # new code for land mask
+        terra_expanded = np.expand_dims(terra, axis=0).repeat(n_files, axis=0)  # time, lat, lon
+        terra_flat = terra_expanded.flatten()  # (time * lat * lon)
+        ocean_mask_flat = terra_flat < 0.5  # True = ocean, False = land
+
+
     if flag_dict['sfc_pres']:
-        #SFC_PRES = variables.SFC_REFERENCE_P
-        sfc_pres = np.load("/ocean/projects/ees240018p/gmooers/Githubs/Neural_nework_parameterization/NN_training/src/CAM_HPO/Testing_log/temp_data/z_height_of_terrain.npy")
+        sfc_pres = variables.SFC_REFERENCE_P.values
+        # shape is time, lat, lon
 
-    # default off
+
     if flag_dict['skt']:
         SKT = variables.SKT
-
-    #default off
-    if flag_dict['cos_lat']:
-        cos_lat = np.zeros((n_files, n_y, n_x))
-        cos_lat[:, :, :] = xr.ufuncs.cos(xr.ufuncs.radians(y.values[None, :, None]))
+        # shape is time, lat, lon
 
     #code adapted from Janni
     adz = xr.zeros_like(z[:n_z_input]) 
@@ -104,7 +119,11 @@ def build_training_dataset(config_file):
     rho_dz = adz*dz*rho
     
     Tin = variables.TABS_SIGMA[:,:n_z_input] #originally just called tabs
-    Qrad = variables.QRAD_SIGMA[:,:n_z_input] / 86400.
+    print("Tin raw mean:", Tin.mean().values, 
+      "min:", Tin.min().values, 
+      "max:", Tin.max().values)
+    Qrad = variables.QRAD_SIGMA[:,:n_z_input] / 86400. # need to include for radiation
+    
 
     print("Tin, Qin in the script")
 
@@ -135,9 +154,12 @@ def build_training_dataset(config_file):
     dfac_dz = np.zeros((n_files, n_z_input, n_y, n_x))
     for k in range(n_z_input - 1):
         kb = max(0, k - 1)
-        dfac_dz[:, k, :, :] = (fac[:, k + 1, :, :] - fac[:, k, :, :]) / rho_dz[k, :] * rho[:, k]
+        dfac_dz[:, k, :, :] = (fac[:, k + 1, :, :] - fac[:, k, :, :]) / rho_dz[k] * rho[k]
+            
+
+            
         
-    Tout = dfac_dz * (qpflux_z_coarse + qpflux_diff_coarse_z - precip) / rho
+    Tout = dfac_dz * (qpflux_z_coarse + qpflux_diff_coarse_z - precip) / rho # could add in qrad here for radation
 
     print("Variables Created")
     
@@ -148,9 +170,13 @@ def build_training_dataset(config_file):
     # code below reshapes the data into (z column, sample) where sample = lat*time*lon
     # Janni's version reshaped to (z, lat, sample) where sample = time*lon
     # at this point in the code (via .values) the data is transformed from an xarray/DataArray object into a numpy array in memory
+
+
     if flag_dict['Tin_feature']:
+        # shape is originally t, z, lat, lon
         Tin = Tin.transpose("z","lat","time","lon").values
         Tin = np.reshape(Tin, (n_z_input, n_y*n_files*n_x))
+        print("Tin reshaped mean:", Tin.mean(), "min:", Tin.min(), "max:", Tin.max())
         my_dict_train["Tin"] = (("z","sample"), Tin)
         del Tin
     
@@ -159,8 +185,22 @@ def build_training_dataset(config_file):
         qin = np.reshape(qin, (n_z_input, n_y*n_files*n_x))
         my_dict_train["qin"] = (("z","sample"), qin)
         del qin
-    
-    if flag_dict['predict_tendencies']:
+
+    if flag_dict['Terra_feature']:
+        TERRA = variables.TERRA_SIGMA[:,:n_z_input] #originally just called tabs
+        TERRA = TERRA.transpose("z","lat","time","lon").values
+        TERRA = np.reshape(TERRA, (n_z_input, n_y*n_files*n_x))
+        my_dict_train["terra"] = (("z","sample"), TERRA)
+        del TERRA
+
+    if flag_dict['Terraw_feature']:
+        TERRAW = variables.TERRAW_SIGMA[:,:n_z_input] #originally just called tabs
+        TERRAW = TERRAW.transpose("z","lat","time","lon").values
+        TERRAW = np.reshape(TERRAW, (n_z_input, n_y*n_files*n_x))
+        my_dict_train["terraw"] = (("z","sample"), TERRAW)
+        del TERRAW
+ 
+    if flag_dict['predict_tendencies']:            
         Tout = Tout.transpose("z","lat","time","lon").values
         Tout = np.reshape(Tout, (n_z_input, n_y*n_files*n_x))
         my_dict_train["Tout"] = (("z","sample"), Tout)
@@ -184,11 +224,10 @@ def build_training_dataset(config_file):
     if flag_dict['land_frac']:
         terra = np.expand_dims(terra, axis=0).repeat(n_files, axis=0)
         terra = np.reshape(terra, (n_y*n_files*n_x))
-        my_dict_train["terra"] = (("sample"), terra)
+        my_dict_train["land_frac"] = (("sample"), terra)
         del terra
-    
+
     if flag_dict['sfc_pres']:
-        sfc_pres = np.expand_dims(sfc_pres, axis=0).repeat(n_files, axis=0)
         sfc_pres = np.reshape(sfc_pres, (n_y*n_files*n_x))
         my_dict_train["sfc_pres"] = (("sample"), sfc_pres)
         del sfc_pres
@@ -205,6 +244,49 @@ def build_training_dataset(config_file):
         my_dict_train["area"] = (("sample"), area)
         del area
 
+    if flag_dict['land_ice']:
+        land_ice = variables.LANDICEM
+        land_ice = land_ice.transpose("lat","time","lon").values
+        land_ice = np.reshape(land_ice, (n_y*n_files*n_x))
+        my_dict_train["land_ice"] = (("sample"), land_ice)
+        del land_ice
+
+    if flag_dict['sea_ice']:
+        sea_ice = variables.SEAICEMA
+        sea_ice = sea_ice.transpose("lat","time","lon").values
+        sea_ice = np.reshape(sea_ice, (n_y*n_files*n_x))
+        my_dict_train["sea_ice"] = (("sample"), sea_ice)
+        del sea_ice
+
+    if flag_dict['veg']:
+        veg = variables.VEG
+        veg = veg.transpose("lat","time","lon").values
+        veg = np.reshape(veg, (n_y*n_files*n_x))
+        my_dict_train["veg"] = (("sample"), veg)
+        del veg
+
+    if flag_dict['soil_temp']:
+        soil_temp = variables.SOILT
+        soil_temp = soil_temp.transpose("lat","time","lon").values
+        soil_temp = np.reshape(soil_temp, (n_y*n_files*n_x))
+        my_dict_train["soil_temp"] = (("sample"), soil_temp)
+        del soil_temp
+
+    if flag_dict['soil_water']:
+        soil_water = variables.SOILW
+        soil_water = soil_water.transpose("lat","time","lon").values
+        soil_water = np.reshape(soil_water, (n_y*n_files*n_x))
+        my_dict_train["soil_water"] = (("sample"), soil_water)
+        del soil_water
+
+    if flag_dict['tree_canopy']:
+        tree_canopy = variables.TCANOP
+        tree_canopy = tree_canopy.transpose("lat","time","lon").values
+        tree_canopy = np.reshape(tree_canopy, (n_y*n_files*n_x))
+        my_dict_train["tree_canopy"] = (("sample"), tree_canopy)
+        del tree_canopy
+
+
     print("Variables in Dict")
     my_weight_dict = {}
     # code from Janni -- calculates std / min(std) of output vars for normailzation
@@ -213,8 +295,9 @@ def build_training_dataset(config_file):
                                                        q_adv_out,
                                                        q_auto_out,
                                                        q_sed_flux_tot,
-                                                       rho_dz[:,0].values,
+                                                       rho_dz.values,
                                                       ) 
+        
      
     del Tout, T_adv_out, q_adv_out, q_auto_out, q_sed_flux_tot, rho_dz
     my_weight_dict["norms"] = (("norm"), norm_list)
@@ -233,19 +316,25 @@ def build_training_dataset(config_file):
     ds_weight.to_netcdf(savepath + my_label + data_specific_description + "file_"+str(filestart)+"_to_"+str(fileend)+"_w8s.nc")
 
     print("Weights Saved")
-    
+
+        
     ds_train = xr.Dataset(
-    my_dict_train,
-    coords={
-        "z": z[:n_z_input].values,
-        "lat": y.values,
-        "lon": x.values,
-        "z_profile": z.values,
-        "rho": rho[0,:].values,
-        "p": p[0,:].values,
-        "sample": np.arange(0,n_files*len(x.values)*len(y.values), 1),
-    },)
-    
+            my_dict_train,
+            coords={
+            "z": z[:n_z_input].values,
+            "lat": y.values,  # note: lat/lon here are just full grid references, not per-sample
+            "lon": x.values,
+            "z_profile": z.values,
+            "rho": rho.values,
+            "p": p.values,
+            "sample": np.arange(my_dict_train["Tin"][1].shape[1]),  # updated sample count
+        },
+    )
+    for varname in ds_train.data_vars:
+        data = ds_train[varname].values
+        print(f"{varname} -- mean: {np.nanmean(data):.4f}, min: {np.nanmin(data):.4f}, max: {np.nanmax(data):.4f}")
+
+        
     print("starting save of main data")
     ds_train.to_netcdf(savepath + my_label + data_specific_description + "file_"+str(filestart)+"_to_"+str(fileend)+".nc")
     print("Finished Save of main data")
